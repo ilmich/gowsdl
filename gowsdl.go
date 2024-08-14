@@ -24,7 +24,7 @@ import (
 	"unicode"
 )
 
-const maxRecursion uint8 = 20
+const maxRecursion uint8 = 50
 
 // GoWSDL defines the struct for WSDL generator.
 type GoWSDL struct {
