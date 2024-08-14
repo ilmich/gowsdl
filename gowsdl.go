@@ -24,9 +24,8 @@ import (
 	"unicode"
 )
 
-const maxRecursion uint8 = 50
-
-// GoWSDL defines the struct for WSDL generator.
+const maxRecursion uint8 = 120
+// GoWSDL defines the struct for WSDL generator. 
 type GoWSDL struct {
 	loc                   *Location
 	rawWSDL               []byte
@@ -37,6 +36,7 @@ type GoWSDL struct {
 	resolvedXSDExternals  map[string]bool
 	currentRecursionLevel uint8
 	currentNamespace      string
+	resolveCollisions     map[string]string
 }
 
 // Method setNS sets (and returns) the currently active XML namespace.
@@ -126,15 +126,59 @@ func NewGoWSDL(file, pkg string, ignoreTLS bool, exportAllTypes bool) (*GoWSDL, 
 // to generate types and another one to generate operations.
 func (g *GoWSDL) Start() (map[string][]byte, error) {
 	gocode := make(map[string][]byte)
+	
+	g.resolveCollisions = make(map[string]string)
 
 	err := g.unmarshal()
 	if err != nil {
 		return nil, err
 	}
 
+	// resolve complex type name collision
+	{
+		seen := map[string]int{}
+		for _, schema := range g.wsdl.Types.Schemas {
+			for _, complexType := range schema.ComplexTypes {
+				seen[complexType.Name] += 1
+			}
+			for _, simpleType := range schema.SimpleType {
+				seen[simpleType.Name] += 1
+			}
+		}
+		for k, v := range seen {
+			if v < 2 {
+				delete(seen, k)
+			}
+		}
+		for i := range g.wsdl.Types.Schemas {
+			schema := g.wsdl.Types.Schemas[i]
+			for j := range schema.ComplexTypes {
+				complexType := schema.ComplexTypes[j]
+				if num := seen[complexType.Name]; num > 0 {
+					org := complexType.Name
+					update := fmt.Sprintf("%s%d", org, num)
+					g.resolveCollisions[fmt.Sprintf("%s/%s", schema.TargetNamespace, org)] = update
+					complexType.Name = update
+					seen[org] -= 1
+				}
+			}
+			
+			for j := range schema.SimpleType {
+				simpleType := schema.SimpleType[j]
+				if num := seen[simpleType.Name]; num > 0 {
+					org := simpleType.Name
+					update := fmt.Sprintf("%s%d", org, num)
+					g.resolveCollisions[fmt.Sprintf("%s/%s", schema.TargetNamespace, org)] = update
+					simpleType.Name = update
+					seen[org] -= 1
+				}
+			}
+		}
+	}
+
 	// Process WSDL nodes
 	for _, schema := range g.wsdl.Types.Schemas {
-		newTraverser(schema, g.wsdl.Types.Schemas).traverse()
+		newTraverser(schema, g.wsdl.Types.Schemas, g.resolveCollisions).traverse()
 	}
 
 	var wg sync.WaitGroup
@@ -610,8 +654,8 @@ func (g *GoWSDL) findType(message string) string {
 }
 
 // Given a type, check if there's an Element with that type, and return its name.
-func (g *GoWSDL) findNameByType(name string) string {
-	return newTraverser(nil, g.wsdl.Types.Schemas).findNameByType(name)
+func (g *GoWSDL) findNameByType(name string) string {	
+	return newTraverser(nil, g.wsdl.Types.Schemas, g.resolveCollisions).findNameByType(name)
 }
 
 // TODO(c4milo): Add support for namespaces instead of striping them out

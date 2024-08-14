@@ -2,6 +2,8 @@ package gowsdl
 
 import (
 	"encoding/xml"
+	"log"
+	"fmt"
 	"strings"
 )
 
@@ -16,17 +18,19 @@ type traverser struct {
 	c   *XSDSchema
 	all []*XSDSchema
 	tm  traverseMode
+	resolveCollisions map[string]string	
 	// fields used by findNameByType mode
 	typeName             string
 	foundElmName         string
 	conflictingTypeUsage bool
 }
 
-func newTraverser(c *XSDSchema, all []*XSDSchema) *traverser {
+func newTraverser(c *XSDSchema, all []*XSDSchema, resolveCollisions map[string]string) *traverser {
 	return &traverser{
 		c:   c,
 		all: all,
 		tm:  refResolution, // default traverse mode is refResolution
+		resolveCollisions: resolveCollisions,		
 	}
 }
 
@@ -99,6 +103,14 @@ func (t *traverser) traverseElement(elm *XSDElement) {
 	if elm.SimpleType != nil {
 		t.traverseSimpleType(elm.SimpleType)
 	}
+	if t.resolveCollisions != nil {		
+		ref := t.qname(elm.Type)
+		log.Println("findNameByTipe", fmt.Sprintf("%s/%s", ref.Space, ref.Local))
+		if updated, ok := t.resolveCollisions[fmt.Sprintf("%s/%s", ref.Space, ref.Local)]; ok {
+			elm.Type = updated
+		}
+	}
+
 }
 
 func (t *traverser) findElmName(elm *XSDElement) {
@@ -193,8 +205,10 @@ func (t *traverser) qname(name string) (qname xml.Name) {
 	} else {
 		qname.Local = x[1]
 		qname.Space = x[0]
-		if ns, ok := t.c.Xmlns[qname.Space]; ok {
-			qname.Space = ns
+		if t.c != nil {
+			if ns, ok := t.c.Xmlns[qname.Space]; ok {
+				qname.Space = ns		
+			}		
 		}
 	}
 
