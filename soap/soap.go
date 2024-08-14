@@ -470,6 +470,7 @@ func (s *Client) CallWithFaultDetail(soapAction string, request, response interf
 func (s *Client) CallWithEnvelope(ctx context.Context, soapAction string, envelope, response interface{}, faultDetail FaultError,
 	retAttachments *[]MIMEMultipartAttachment) error {
 	return s.call(ctx, soapAction, envelope, nil, response, nil, faultDetail, retAttachments)
+}
 
 func (s *Client) call(ctx context.Context, soapAction string, requestEnvelope, request, response interface{}, responseEnvelope SOAPResponseEnvelopeInterface, faultDetail FaultError,
 	retAttachments *[]MIMEMultipartAttachment) error {
@@ -479,18 +480,16 @@ func (s *Client) call(ctx context.Context, soapAction string, requestEnvelope, r
 		soapEnvelope := SOAPEnvelope{
 			XmlNS: XmlNsSoapEnv,
 		}
-		soapEnvelope.Headers = s.headers
+		soapEnvelope.Body.Content = request
+		if s.headers != nil && len(s.headers) > 0 {
+			soapEnvelope.Header = &SOAPHeader{
+				Headers: s.headers,
+			}
+		}
 		soapEnvelope.Body.Content = request
 		requestEnvelope = soapEnvelope
  	}
-
-	if s.headers != nil && len(s.headers) > 0 {
-		envelope.Header = &SOAPHeader{
-			Headers: s.headers,
-		}
-	}
-
-	envelope.Body.Content = request
+	
 	buffer := new(bytes.Buffer)
 	var encoder SOAPEncoder
 	if s.opts.mtom && s.opts.mma {
@@ -630,7 +629,7 @@ func (s *Client) call(ctx context.Context, soapAction string, requestEnvelope, r
 	}
 
 	if responseEnvelope.GetAttachments() != nil {
-		*retAttachments = respEnvelope.GetAttachments()
+		*retAttachments = responseEnvelope.GetAttachments()
 	}
 	return responseEnvelope.GetBody().ErrorFromFault()
 }
