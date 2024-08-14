@@ -2,7 +2,7 @@ package gowsdl
 
 import (
 	"encoding/xml"
-	"log"
+
 	"fmt"
 	"strings"
 )
@@ -103,9 +103,9 @@ func (t *traverser) traverseElement(elm *XSDElement) {
 	if elm.SimpleType != nil {
 		t.traverseSimpleType(elm.SimpleType)
 	}
-	if t.resolveCollisions != nil {		
+	if t.resolveCollisions != nil {
 		ref := t.qname(elm.Type)
-		log.Println("findNameByTipe", fmt.Sprintf("%s/%s", ref.Space, ref.Local))
+
 		if updated, ok := t.resolveCollisions[fmt.Sprintf("%s/%s", ref.Space, ref.Local)]; ok {
 			elm.Type = updated
 		}
