@@ -1,8 +1,8 @@
-module github.com/ilmich/gowsdl
+module github.com/Andrea-Cavallo/gowsdl
 
-go 1.15
+go 1.22
 
 require (
-	github.com/hooklift/gowsdl v0.5.0 // indirect
-	github.com/stretchr/testify v1.6.1
+
+	github.com/stretchr/testify v1.9.0
 )
