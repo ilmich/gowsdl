@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"time"
@@ -25,7 +26,6 @@ type SoapResponseBodyInterface interface {
 	ErrorFromFault() error
 	SetContent(interface{})
 }
-
 
 type SOAPEncoder interface {
 	Encode(v interface{}) error
@@ -67,7 +67,6 @@ func (s *SOAPEnvelopeResponse) GetAttachments() []MIMEMultipartAttachment {
 	return s.Attachments
 }
 
-
 type SOAPEnvelope struct {
 	XMLName xml.Name `xml:"soap:Envelope"`
 	XmlNS   string   `xml:"xmlns:soap,attr"`
@@ -75,7 +74,6 @@ type SOAPEnvelope struct {
 	Header *SOAPHeader
 	Body   SOAPBody
 }
-
 
 type SOAPHeader struct {
 	XMLName xml.Name `xml:"soap:Header"`
@@ -488,8 +486,8 @@ func (s *Client) call(ctx context.Context, soapAction string, requestEnvelope, r
 		}
 		soapEnvelope.Body.Content = request
 		requestEnvelope = soapEnvelope
- 	}
-	
+	}
+
 	buffer := new(bytes.Buffer)
 	var encoder SOAPEncoder
 	if s.opts.mtom && s.opts.mma {
@@ -589,7 +587,7 @@ func (s *Client) call(ctx context.Context, soapAction string, requestEnvelope, r
 	}
 
 	var mmaBoundary string
-	if s.opts.mma{
+	if s.opts.mma {
 		mmaBoundary, err = getMmaHeader(res.Header.Get("Content-Type"))
 		if err != nil {
 			return err
@@ -632,4 +630,212 @@ func (s *Client) call(ctx context.Context, soapAction string, requestEnvelope, r
 		*retAttachments = responseEnvelope.GetAttachments()
 	}
 	return responseEnvelope.GetBody().ErrorFromFault()
+}
+
+// Andrea-Cavallo custom implementation starts here
+
+// CallResponse rappresenta la struttura che contiene tutte le informazioni della risposta SOAP.
+type CallResponse struct {
+	StatusCode  int
+	Headers     http.Header
+	Body        []byte
+	ResponseObj interface{}
+}
+
+// callWithResponse esegue una richiesta SOAP e restituisce una risposta strutturata.
+func (s *Client) callWithResponse(
+	ctx context.Context,
+	soapAction string,
+	request, response interface{},
+	customHeaders map[string]string,
+	useTLS bool,
+) (*CallResponse, error) {
+
+	// Prepara l'envelope della richiesta
+	requestEnvelope, err := s.prepareRequestEnvelope(request)
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare request envelope: %w", err)
+	}
+
+	// Codifica la richiesta
+	buffer, err := s.encodeRequestEnvelope(requestEnvelope)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode request envelope: %w", err)
+	}
+
+	// Crea la richiesta HTTP
+	req, err := s.createHTTPRequest(ctx, soapAction, buffer, customHeaders)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+
+	// Esegue la richiesta
+	res, err := s.executeRequest(req, useTLS)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer res.Body.Close()
+
+	// Gestisce gli errori HTTP
+	if res.StatusCode >= 400 {
+		return nil, s.handleHTTPError(res)
+	}
+
+	// Decodifica la risposta
+	responseEnvelope := s.createResponseEnvelope(response)
+	body, err := s.decodeResponse(res, responseEnvelope)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	// Restituisce una struttura con tutte le informazioni utili
+	return &CallResponse{
+		StatusCode:  res.StatusCode,
+		Headers:     res.Header,
+		Body:        body,
+		ResponseObj: responseEnvelope.GetBody(),
+	}, nil
+}
+
+// prepareRequestEnvelope prepara l'envelope SOAP per la richiesta.
+func (s *Client) prepareRequestEnvelope(request interface{}) (SOAPEnvelope, error) {
+	soapEnvelope := SOAPEnvelope{
+		XmlNS: XmlNsSoapEnv,
+		Body:  SOAPBody{Content: request},
+	}
+
+	if len(s.headers) > 0 {
+		soapEnvelope.Header = &SOAPHeader{Headers: s.headers}
+	}
+
+	return soapEnvelope, nil
+}
+
+// encodeRequestEnvelope codifica l'envelope SOAP in un buffer.
+func (s *Client) encodeRequestEnvelope(requestEnvelope SOAPEnvelope) (*bytes.Buffer, error) {
+	buffer := new(bytes.Buffer)
+	encoder := xml.NewEncoder(buffer)
+
+	if err := encoder.Encode(requestEnvelope); err != nil {
+		return nil, err
+	}
+
+	if err := encoder.Flush(); err != nil {
+		return nil, err
+	}
+
+	return buffer, nil
+}
+
+// createHTTPRequest crea una nuova richiesta HTTP.
+func (s *Client) createHTTPRequest(
+	ctx context.Context,
+	soapAction string,
+	buffer *bytes.Buffer,
+	customHeaders map[string]string,
+) (*http.Request, error) {
+
+	req, err := http.NewRequest("POST", s.url, buffer)
+	if err != nil {
+		return nil, err
+	}
+
+	// Autenticazione di base
+	if s.opts.auth != nil {
+		req.SetBasicAuth(s.opts.auth.Login, s.opts.auth.Password)
+	}
+
+	req = req.WithContext(ctx)
+	s.setRequestHeaders(req, soapAction)
+
+	// Aggiungi headers personalizzati
+	for k, v := range customHeaders {
+		req.Header.Set(k, v)
+	}
+
+	return req, nil
+}
+
+// setRequestHeaders imposta gli header della richiesta HTTP.
+func (s *Client) setRequestHeaders(req *http.Request, soapAction string) {
+	req.Header.Add("Content-Type", "text/xml; charset=\"utf-8\"")
+	req.Header.Add("SOAPAction", soapAction)
+
+	for k, v := range s.opts.httpHeaders {
+		req.Header.Set(k, v)
+	}
+	req.Close = true
+}
+
+// executeRequest esegue la richiesta HTTP e gestisce l'opzione TLS.
+func (s *Client) executeRequest(req *http.Request, useTLS bool) (*http.Response, error) {
+	tr := &http.Transport{
+		DialContext:         s.createDialContext(),
+		TLSHandshakeTimeout: s.opts.tlshshaketimeout,
+	}
+
+	if !useTLS {
+		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	} else {
+		tr.TLSClientConfig = s.opts.tlsCfg
+	}
+
+	client := &http.Client{Timeout: s.opts.contimeout, Transport: tr}
+
+	return client.Do(req)
+}
+
+// createDialContext crea un DialContext con un timeout configurabile.
+func (s *Client) createDialContext() func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		d := net.Dialer{Timeout: s.opts.timeout}
+		return d.DialContext(ctx, network, addr)
+	}
+}
+
+// handleHTTPError gestisce gli errori HTTP restituendo un errore dettagliato.
+func (s *Client) handleHTTPError(res *http.Response) error {
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read error response body: %w", err)
+	}
+	log.Printf("HTTP Error: %d - %s", res.StatusCode, string(body))
+	return &HTTPError{
+		StatusCode:   res.StatusCode,
+		ResponseBody: body,
+	}
+}
+
+// createResponseEnvelope crea un envelope SOAP per la risposta.
+func (s *Client) createResponseEnvelope(response interface{}) SOAPResponseEnvelopeInterface {
+	return &SOAPEnvelopeResponse{
+		Body: &SOAPBodyResponse{
+			Content: response,
+		},
+	}
+}
+
+// decodeResponse decodifica la risposta HTTP nel formato SOAP previsto.
+func (s *Client) decodeResponse(res *http.Response, responseEnvelope SOAPResponseEnvelopeInterface) ([]byte, error) {
+	body, cachedErrorBody := s.cacheErrorBody(res)
+	decoder := xml.NewDecoder(body)
+
+	if err := decoder.Decode(responseEnvelope); err != nil {
+		return cachedErrorBody, fmt.Errorf("failed to decode SOAP response: %w", err)
+	}
+
+	return cachedErrorBody, nil
+}
+
+// cacheErrorBody memorizza il corpo della risposta in caso di errore 500.
+func (s *Client) cacheErrorBody(res *http.Response) (io.ReadCloser, []byte) {
+	body := res.Body
+	var cachedErrorBody []byte
+
+	if res.StatusCode == 500 {
+		cachedErrorBody, _ = io.ReadAll(res.Body)
+		body = io.NopCloser(bytes.NewReader(cachedErrorBody))
+	}
+
+	return body, cachedErrorBody
 }

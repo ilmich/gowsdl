@@ -24,8 +24,7 @@ import (
 	"unicode"
 )
 
-const maxRecursion uint8 = 120
-// GoWSDL defines the struct for WSDL generator. 
+// GoWSDL defines the struct for WSDL generator.
 type GoWSDL struct {
 	loc                   *Location
 	rawWSDL               []byte
@@ -102,7 +101,7 @@ func NewGoWSDL(file, pkg string, ignoreTLS bool, exportAllTypes bool) (*GoWSDL, 
 
 	pkg = strings.TrimSpace(pkg)
 	if pkg == "" {
-		pkg = "myservice"
+		pkg = "generated_from_wsdl"
 	}
 	makePublicFn := func(id string) string { return id }
 	if exportAllTypes {
@@ -122,11 +121,17 @@ func NewGoWSDL(file, pkg string, ignoreTLS bool, exportAllTypes bool) (*GoWSDL, 
 	}, nil
 }
 
-// Start initiaties the code generation process by starting two goroutines: one
-// to generate types and another one to generate operations.
+// Start is a method of the GoWSDL struct. It is used to process a WSDL file and generate the corresponding Go code.
+// The method resolves complex type name collisions, filters out non-colliding names, and updates colliding names.
+// It then processes WSDL nodes, generates header code, server header code, and server WSDL code.
+// The generated Go code is returned as a map[string][]byte, and any error encountered during the process is also returned.
+// This method is concurrently executed using goroutines and waits for all goroutines to finish using a WaitGroup.
+// The generated Go code is stored in the gocode map with the respective keys: "types", "operations", "server", "header", "server_header", and "server_wsdl".
+// If any error occurs during code generation, it is stored in the genErr variable and returned as an error.
 func (g *GoWSDL) Start() (map[string][]byte, error) {
 	gocode := make(map[string][]byte)
-	
+	var mu sync.Mutex
+
 	g.resolveCollisions = make(map[string]string)
 
 	err := g.unmarshal()
@@ -134,44 +139,47 @@ func (g *GoWSDL) Start() (map[string][]byte, error) {
 		return nil, err
 	}
 
-	// resolve complex type name collision
-	{
-		seen := map[string]int{}
-		for _, schema := range g.wsdl.Types.Schemas {
-			for _, complexType := range schema.ComplexTypes {
-				seen[complexType.Name] += 1
-			}
-			for _, simpleType := range schema.SimpleType {
-				seen[simpleType.Name] += 1
+	// Resolve complex type name collisions
+	seen := map[string]int{}
+	for _, schema := range g.wsdl.Types.Schemas {
+		for _, complexType := range schema.ComplexTypes {
+			seen[complexType.Name]++
+		}
+		for _, simpleType := range schema.SimpleType {
+			seen[simpleType.Name]++
+		}
+	}
+
+	// Filter out non-colliding names
+	for k, v := range seen {
+		if v < 2 {
+			delete(seen, k)
+		}
+	}
+
+	// Log collisions and update colliding names
+	for i := range g.wsdl.Types.Schemas {
+		schema := g.wsdl.Types.Schemas[i]
+		for j := range schema.ComplexTypes {
+			complexType := schema.ComplexTypes[j]
+			if num := seen[complexType.Name]; num > 0 {
+				org := complexType.Name
+				update := fmt.Sprintf("%s%d", org, num)
+				g.resolveCollisions[fmt.Sprintf("%s/%s", schema.TargetNamespace, org)] = update
+				complexType.Name = update
+				seen[org]--
+				log.Printf("Collision detected: ComplexType '%s' renamed to '%s' in namespace '%s'", org, update, schema.TargetNamespace)
 			}
 		}
-		for k, v := range seen {
-			if v < 2 {
-				delete(seen, k)
-			}
-		}
-		for i := range g.wsdl.Types.Schemas {
-			schema := g.wsdl.Types.Schemas[i]
-			for j := range schema.ComplexTypes {
-				complexType := schema.ComplexTypes[j]
-				if num := seen[complexType.Name]; num > 0 {
-					org := complexType.Name
-					update := fmt.Sprintf("%s%d", org, num)
-					g.resolveCollisions[fmt.Sprintf("%s/%s", schema.TargetNamespace, org)] = update
-					complexType.Name = update
-					seen[org] -= 1
-				}
-			}
-			
-			for j := range schema.SimpleType {
-				simpleType := schema.SimpleType[j]
-				if num := seen[simpleType.Name]; num > 0 {
-					org := simpleType.Name
-					update := fmt.Sprintf("%s%d", org, num)
-					g.resolveCollisions[fmt.Sprintf("%s/%s", schema.TargetNamespace, org)] = update
-					simpleType.Name = update
-					seen[org] -= 1
-				}
+		for j := range schema.SimpleType {
+			simpleType := schema.SimpleType[j]
+			if num := seen[simpleType.Name]; num > 0 {
+				org := simpleType.Name
+				update := fmt.Sprintf("%s%d", org, num)
+				g.resolveCollisions[fmt.Sprintf("%s/%s", schema.TargetNamespace, org)] = update
+				simpleType.Name = update
+				seen[org]--
+				log.Printf("Collision detected: SimpleType '%s' renamed to '%s' in namespace '%s'", org, update, schema.TargetNamespace)
 			}
 		}
 	}
@@ -182,52 +190,46 @@ func (g *GoWSDL) Start() (map[string][]byte, error) {
 	}
 
 	var wg sync.WaitGroup
+	var genErr error
 
-	wg.Add(1)
-	go func() {
+	runWithMutex := func(key string, genFunc func() ([]byte, error)) {
 		defer wg.Done()
-		var err error
-
-		gocode["types"], err = g.genTypes()
+		code, err := genFunc()
 		if err != nil {
-			log.Println("genTypes", "error", err)
+			mu.Lock()
+			genErr = err
+			mu.Unlock()
+			return
 		}
-	}()
+		mu.Lock()
+		gocode[key] = code
+		mu.Unlock()
+	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		var err error
-
-		gocode["operations"], err = g.genOperations()
-		if err != nil {
-			log.Println(err)
-		}
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		var err error
-
-		gocode["server"], err = g.genServer()
-		if err != nil {
-			log.Println(err)
-		}
-	}()
+	wg.Add(3)
+	go runWithMutex("types", g.genTypes)
+	go runWithMutex("operations", g.genOperations)
+	go runWithMutex("server", g.genServer)
 
 	wg.Wait()
 
+	if genErr != nil {
+		return nil, genErr
+	}
+
+	// Generate header code
 	gocode["header"], err = g.genHeader()
 	if err != nil {
-		log.Println(err)
+		return nil, err
 	}
 
+	// Generate server header code
 	gocode["server_header"], err = g.genServerHeader()
 	if err != nil {
-		log.Println(err)
+		return nil, err
 	}
 
+	// Generate server WSDL
 	gocode["server_wsdl"] = []byte("var wsdl = `" + string(g.rawWSDL) + "`")
 
 	return gocode, nil
@@ -236,7 +238,7 @@ func (g *GoWSDL) Start() (map[string][]byte, error) {
 func (g *GoWSDL) fetchFile(loc *Location) (data []byte, err error) {
 	if loc.f != "" {
 		log.Println("Reading", "file", loc.f)
-		data, err = ioutil.ReadFile(loc.f)
+		data, err = os.ReadFile(loc.f)
 	} else {
 		log.Println("Downloading", "file", loc.u.String())
 		data, err = downloadFile(loc.u.String(), g.ignoreTLS)
@@ -267,6 +269,10 @@ func (g *GoWSDL) unmarshal() error {
 	return nil
 }
 
+// resolveXSDExternals downloads and resolves external XSD imports and includes for a given XSD schema.
+// It downloads the XSD file, parses it into an XSDSchema struct, and recursively resolves any additional imports or includes if present.
+// The resolved schemas are then appended to the wsdl.Types.Schemas slice.
+// It returns an error if there is any issue with downloading, parsing, or resolving the external XSDs.
 func (g *GoWSDL) resolveXSDExternals(schema *XSDSchema, loc *Location) error {
 	download := func(base *Location, ref string) error {
 		location, err := base.Parse(ref)
@@ -274,11 +280,11 @@ func (g *GoWSDL) resolveXSDExternals(schema *XSDSchema, loc *Location) error {
 			return err
 		}
 		schemaKey := location.String()
-		if g.resolvedXSDExternals[location.String()] {
+		if g.resolvedXSDExternals[schemaKey] {
 			return nil
 		}
 		if g.resolvedXSDExternals == nil {
-			g.resolvedXSDExternals = make(map[string]bool, maxRecursion)
+			g.resolvedXSDExternals = make(map[string]bool)
 		}
 		g.resolvedXSDExternals[schemaKey] = true
 
@@ -294,10 +300,8 @@ func (g *GoWSDL) resolveXSDExternals(schema *XSDSchema, loc *Location) error {
 			return err
 		}
 
-		if (len(newschema.Includes) > 0 || len(newschema.Imports) > 0) &&
-			maxRecursion > g.currentRecursionLevel {
-			g.currentRecursionLevel++
-
+		// Risolvi ricorsivamente solo se ci sono ulteriori importazioni o inclusioni
+		if len(newschema.Includes) > 0 || len(newschema.Imports) > 0 {
 			err = g.resolveXSDExternals(newschema, location)
 			if err != nil {
 				return err
@@ -309,8 +313,8 @@ func (g *GoWSDL) resolveXSDExternals(schema *XSDSchema, loc *Location) error {
 		return nil
 	}
 
+	// Scarica e risolvi le importazioni
 	for _, impts := range schema.Imports {
-		// Download the file only if we have a hint in the form of schemaLocation.
 		if impts.SchemaLocation == "" {
 			log.Printf("[WARN] Don't know where to find XSD for %s", impts.Namespace)
 			continue
@@ -321,6 +325,7 @@ func (g *GoWSDL) resolveXSDExternals(schema *XSDSchema, loc *Location) error {
 		}
 	}
 
+	// Scarica e risolvi le inclusioni
 	for _, incl := range schema.Includes {
 		if e := download(loc, incl.SchemaLocation); e != nil {
 			return e
@@ -571,6 +576,21 @@ var xsd2GoTypes = map[string]string{
 	"anytype":            "AnyType",
 	"ncname":             "NCName",
 	"anyuri":             "AnyURI",
+	// customz.
+	"sdpstring":     "string",
+	"sdpboolean":    "bool",
+	"sdpbyte":       "int8",
+	"sdpbigdecimal": "float64",
+	"sdplong":       "int64",
+	"sdpinteger":    "int32",
+	"sdpbiginteger": "int32",
+	"sdpfloat":      "float32",
+	"sdpdouble":     "float64",
+	"sdpshort":      "int16",
+	"sdpdate":       "soap.XSDDate",
+	"sdptime":       "soap.XSDTime",
+	"sdpdatetime":   "soap.XSDDateTime",
+	"timestamp":     "*int64",
 }
 
 func removeNS(xsdType string) string {
@@ -585,15 +605,15 @@ func removeNS(xsdType string) string {
 }
 
 func toGoType(xsdType string, nillable bool) string {
-	// Handles name space, ie. xsd:string, xs:string
+	// Rimuove il namespace, ad esempio xsd:string diventa string
 	r := strings.Split(xsdType, ":")
 
 	t := r[0]
-
 	if len(r) == 2 {
 		t = r[1]
 	}
 
+	// Cerca il tipo nel dizionario `xsd2GoTypes`
 	value := xsd2GoTypes[strings.ToLower(t)]
 
 	if value != "" {
@@ -603,9 +623,9 @@ func toGoType(xsdType string, nillable bool) string {
 		return value
 	}
 
+	// Se il tipo non è trovato, ritorna un tipo pubblico generico Go
 	return "*" + replaceReservedWords(makePublic(t))
 }
-
 func removePointerFromType(goType string) string {
 	return regexp.MustCompile("^\\s*\\*").ReplaceAllLiteralString(goType, "")
 }
@@ -654,7 +674,7 @@ func (g *GoWSDL) findType(message string) string {
 }
 
 // Given a type, check if there's an Element with that type, and return its name.
-func (g *GoWSDL) findNameByType(name string) string {	
+func (g *GoWSDL) findNameByType(name string) string {
 	return newTraverser(nil, g.wsdl.Types.Schemas, g.resolveCollisions).findNameByType(name)
 }
 

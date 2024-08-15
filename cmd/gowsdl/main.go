@@ -43,7 +43,6 @@ Support for generating namespaces.
 Make code generation agnostic so generating code to other programming languages is feasible through plugins.
 
 */
-
 package main
 
 import (
@@ -58,104 +57,122 @@ import (
 	gen "github.com/ilmich/gowsdl"
 )
 
-// Version is initialized in compilation time by go build.
+// Version and Name are initialized during compilation by go build.
 var Version string
-
-// Name is initialized in compilation time by go build.
 var Name string
 
-var vers = flag.Bool("v", false, "Shows gowsdl version")
-var pkg = flag.String("p", "myservice", "Package under which code will be generated")
-var outFile = flag.String("o", "myservice.go", "File where the generated code will be saved")
-var dir = flag.String("d", "./", "Directory under which package directory will be created")
-var insecure = flag.Bool("i", false, "Skips TLS Verification")
-var makePublic = flag.Bool("make-public", true, "Make the generated types public/exported")
+// Flags
+var (
+	vers       = flag.Bool("v", false, "Shows gowsdl version")
+	pkg        = flag.String("p", "myservice", "Package under which code will be generated")
+	outFile    = flag.String("o", "myservice.go", "File where the generated code will be saved")
+	dir        = flag.String("d", "./", "Directory under which package directory will be created")
+	insecure   = flag.Bool("i", false, "Skips TLS Verification")
+	makePublic = flag.Bool("make-public", true, "Make the generated types public/exported")
+)
 
 func init() {
 	log.SetFlags(0)
 	log.SetOutput(os.Stdout)
-	log.SetPrefix("🍀  ")
+	log.SetPrefix("👽  ")
 }
 
 func main() {
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options] myservice.wsdl\n", os.Args[0])
-		flag.PrintDefaults()
-	}
+	// Setup command-line usage
+	setupUsage()
 
 	flag.Parse()
 
-	// Show app version
+	// Show app version and exit
 	if *vers {
-		log.Println(Version)
-		os.Exit(0)
+		showVersion()
+		return
 	}
 
+	// Check for sufficient arguments
 	if len(os.Args) < 2 {
 		flag.Usage()
-		os.Exit(0)
+		os.Exit(1)
 	}
 
 	wsdlPath := os.Args[len(os.Args)-1]
 
+	// Prevent overwriting the WSDL file
 	if *outFile == wsdlPath {
-		log.Fatalln("Output file cannot be the same WSDL file")
+		log.Fatalln("Output file cannot be the same as the WSDL file")
 	}
 
-	// load wsdl
+	// Load WSDL and generate code
 	gowsdl, err := gen.NewGoWSDL(wsdlPath, *pkg, *insecure, *makePublic)
-	if err != nil {
-		log.Fatalln(err)
-	}
+	handleError(err)
 
-	// generate code
 	gocode, err := gowsdl.Start()
+	handleError(err)
+
+	// Create the output directory if it doesn't exist
+	outputDir := filepath.Join(*dir, *pkg)
+	err = os.MkdirAll(outputDir, 0744)
+	handleError(err)
+
+	// Write the generated code to files
+	writeGeneratedCode(outputDir, gocode, *outFile)
+
+	log.Println("Daje 🚀🚀🚀️")
+}
+
+// setupUsage configures the usage message for the command-line tool.
+func setupUsage() {
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options] myservice.wsdl\n", os.Args[0])
+		flag.PrintDefaults()
+	}
+}
+
+// showVersion displays the version of the tool.
+func showVersion() {
+	log.Println(Name, Version)
+	os.Exit(0)
+}
+
+// handleError is a utility function for error handling.
+func handleError(err error) {
 	if err != nil {
 		log.Fatalln(err)
 	}
+}
 
-	pkg := filepath.Join(*dir, *pkg)
-	err = os.Mkdir(pkg, 0744)
+// writeGeneratedCode handles writing the generated code to the output files.
+func writeGeneratedCode(outputDir string, gocode map[string][]byte, outFile string) {
+	// Write main generated code
+	writeFile(filepath.Join(outputDir, outFile), formatCode(gocode["header"], gocode["types"], gocode["operations"], gocode["soap"]))
 
-	file, err := os.Create(filepath.Join(pkg, *outFile))
-	if err != nil {
-		log.Fatalln(err)
-	}
+	// Write server generated code
+	serverFileName := "server_" + outFile
+	writeFile(filepath.Join(outputDir, serverFileName), formatCode(gocode["server_header"], gocode["server_wsdl"], gocode["server"]))
+}
+
+// writeFile creates a file and writes the content to it.
+func writeFile(filePath string, content []byte) {
+	file, err := os.Create(filePath)
+	handleError(err)
 	defer file.Close()
 
+	_, err = file.Write(content)
+	handleError(err)
+}
+
+// formatCode formats the source code using gofmt.
+func formatCode(parts ...[]byte) []byte {
 	data := new(bytes.Buffer)
-	data.Write(gocode["header"])
-	data.Write(gocode["types"])
-	data.Write(gocode["operations"])
-	data.Write(gocode["soap"])
-
-	// go fmt the generated code
-	source, err := format.Source(data.Bytes())
-	if err != nil {
-		file.Write(data.Bytes())
-		log.Fatalln(err)
+	for _, part := range parts {
+		data.Write(part)
 	}
 
-	file.Write(source)
-
-	// server
-	serverFile, err := os.Create(pkg + "/" + "server" + *outFile)
+	formattedSource, err := format.Source(data.Bytes())
 	if err != nil {
-		log.Fatalln(err)
+		log.Printf("Error formatting source, writing unformatted source: %v", err)
+		return data.Bytes()
 	}
-	defer serverFile.Close()
 
-	serverData := new(bytes.Buffer)
-	serverData.Write(gocode["server_header"])
-	serverData.Write(gocode["server_wsdl"])
-	serverData.Write(gocode["server"])
-
-	serverSource, err := format.Source(serverData.Bytes())
-	if err != nil {
-		serverFile.Write(serverData.Bytes())
-		log.Fatalln(err)
-	}
-	serverFile.Write(serverSource)
-
-	log.Println("Done 👍")
+	return formattedSource
 }
