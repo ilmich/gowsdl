@@ -634,6 +634,13 @@ func (s *Client) call(ctx context.Context, soapAction string, requestEnvelope, r
 
 // Andrea-Cavallo custom implementation starts here
 
+type CustomSOAPEnvelope struct {
+	XMLName xml.Name          `xml:"soap:Envelope"`
+	XmlNS   map[string]string `xml:"-"`
+	Header  *SOAPHeader       `xml:"Header,omitempty"`
+	Body    SOAPBody          `xml:"Body"`
+}
+
 // CallResponse rappresenta la struttura che contiene tutte le informazioni della risposta SOAP.
 type CallResponse struct {
 	StatusCode  int
@@ -649,10 +656,11 @@ func (s *Client) callWithResponse(
 	request, response interface{},
 	customHeaders map[string]string,
 	useTLS bool,
+	xmlNamespaces map[string]string,
 ) (*CallResponse, error) {
 
-	// Prepara l'envelope della richiesta
-	requestEnvelope, err := s.prepareRequestEnvelope(request)
+	// Prepara l'envelope della richiesta con i namespace XML
+	requestEnvelope, err := s.prepareRequestEnvelope(request, xmlNamespaces)
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare request envelope: %w", err)
 	}
@@ -698,31 +706,41 @@ func (s *Client) callWithResponse(
 }
 
 // prepareRequestEnvelope prepara l'envelope SOAP per la richiesta.
-func (s *Client) prepareRequestEnvelope(request interface{}) (SOAPEnvelope, error) {
-	soapEnvelope := SOAPEnvelope{
-		XmlNS: XmlNsSoapEnv,
+func (s *Client) prepareRequestEnvelope(request interface{}, xmlNamespaces map[string]string) (CustomSOAPEnvelope, error) {
+	customSOAPEnvelope := CustomSOAPEnvelope{
+		XmlNS: xmlNamespaces,
 		Body:  SOAPBody{Content: request},
 	}
 
 	if len(s.headers) > 0 {
-		soapEnvelope.Header = &SOAPHeader{Headers: s.headers}
+		customSOAPEnvelope.Header = &SOAPHeader{Headers: s.headers}
 	}
 
-	return soapEnvelope, nil
+	return customSOAPEnvelope, nil
 }
 
 // encodeRequestEnvelope codifica l'envelope SOAP in un buffer.
-func (s *Client) encodeRequestEnvelope(requestEnvelope SOAPEnvelope) (*bytes.Buffer, error) {
+func (s *Client) encodeRequestEnvelope(requestEnvelope CustomSOAPEnvelope) (*bytes.Buffer, error) {
 	buffer := new(bytes.Buffer)
 	encoder := xml.NewEncoder(buffer)
 
-	if err := encoder.Encode(requestEnvelope); err != nil {
+	// Inizia manualmente l'elemento root per includere i namespace personalizzati
+	buffer.WriteString(`<soap:Envelope`)
+	for prefix, uri := range requestEnvelope.XmlNS {
+		buffer.WriteString(fmt.Sprintf(` xmlns:%s="%s"`, prefix, uri))
+	}
+	buffer.WriteString(`>`)
+
+	if err := encoder.Encode(requestEnvelope.Body); err != nil {
 		return nil, err
 	}
 
 	if err := encoder.Flush(); err != nil {
 		return nil, err
 	}
+
+	// Chiude manualmente l'elemento root
+	buffer.WriteString(`</soap:Envelope>`)
 
 	return buffer, nil
 }

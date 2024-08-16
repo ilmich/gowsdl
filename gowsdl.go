@@ -10,7 +10,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -84,7 +84,7 @@ func downloadFile(url string, ignoreTLS bool) ([]byte, error) {
 		return nil, fmt.Errorf("Received response code %d", resp.StatusCode)
 	}
 
-	data, err := ioutil.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -121,13 +121,10 @@ func NewGoWSDL(file, pkg string, ignoreTLS bool, exportAllTypes bool) (*GoWSDL, 
 	}, nil
 }
 
-// Start is a method of the GoWSDL struct. It is used to process a WSDL file and generate the corresponding Go code.
-// The method resolves complex type name collisions, filters out non-colliding names, and updates colliding names.
-// It then processes WSDL nodes, generates header code, server header code, and server WSDL code.
-// The generated Go code is returned as a map[string][]byte, and any error encountered during the process is also returned.
-// This method is concurrently executed using goroutines and waits for all goroutines to finish using a WaitGroup.
-// The generated Go code is stored in the gocode map with the respective keys: "types", "operations", "server", "header", "server_header", and "server_wsdl".
-// If any error occurs during code generation, it is stored in the genErr variable and returned as an error.
+// Start starts the GoWSDL code generation process. It unmarshals the WSDL document, resolves complex type name collisions,
+// and generates the necessary code for types, operations, and server based on the WSDL structure. The output is returned as a
+// map of byte slices, where the keys represent different code files and the values contain the corresponding generated code.
+// In case of any error during the generation process, an error is returned.
 func (g *GoWSDL) Start() (map[string][]byte, error) {
 	gocode := make(map[string][]byte)
 	var mu sync.Mutex

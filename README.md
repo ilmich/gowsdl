@@ -51,9 +51,42 @@ Per generare il codice Go da un file WSDL denominato `example.wsdl` e salvare l'
 gowsdl -o example.go example.wsdl
 ```
 
+## Esempio per richiamare il metodo client.callWithResponse..
+
+- **ctx** - il context se non lo passi viene preso il background.ctx
+- **soapAction** - l'azione soap una stringa
+- **la request** che sara' poi parsata nell'envelope soap
+- **custoMheaders** una mappa di headers custom
+- **responseObject** - un puntatore alla response che ti aspetti ( se non sei sicuro della risposta potresti anche usare : &rawResponse,un puntatore a xml.RawMessage)
+- **useTLS** se false skippi il tls
+- **XlmnNamespace** altra mappa per le nostre esigenze vedi esempio
+
+
+```go
+
+// Crei una mappa rappresentante gli XLMNS ( adesso accetta quelli custom )
+xmlNamespaces := map[string]string{
+"soap": "http://schemas.xmlsoap.org/soap/envelope/",
+"custom1": "http://custom1.example.it",
+"custom2" : "http://custom2.example.it"
+}
+
+response, err := client.callWithResponse(
+ctx,
+soapAction,
+request,
+responseObj,
+customHeaders,
+useTLS,
+xmlNamespaces,
+)
+```
+
+
+
 ## Ringraziamenti
 
-Un sincero ringraziamento agli autori originali di questa libreria e a IlMich .
+Un sincero ringraziamento agli autori originali di questa libreria e a `IlMich` che mi ha illuminato su questi trick .
 Questo fork è stato creato per soddisfare specifiche esigenze di sviluppo personali.
 
 
