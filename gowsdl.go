@@ -560,9 +560,9 @@ var xsd2GoTypes = map[string]string{
 	"byte":               "int8",
 	"long":               "int64",
 	"boolean":            "bool",
-	"datetime":           "soap.XSDDateTime",
-	"date":               "soap.XSDDate",
-	"time":               "soap.XSDTime",
+	"datetime":           "string",
+	"date":               "string",
+	"time":               "string",
 	"base64binary":       "[]byte",
 	"hexbinary":          "[]byte",
 	"unsignedint":        "uint32",
@@ -584,10 +584,10 @@ var xsd2GoTypes = map[string]string{
 	"sdpfloat":      "float32",
 	"sdpdouble":     "float64",
 	"sdpshort":      "int16",
-	"sdpdate":       "soap.XSDDate",
-	"sdptime":       "soap.XSDTime",
-	"sdpdatetime":   "soap.XSDDateTime",
-	"timestamp":     "*int64",
+	"sdpdate":       "string",
+	"sdptime":       "string",
+	"sdpdatetime":   "string",
+	"timestamp":     "int64",
 }
 
 func removeNS(xsdType string) string {
