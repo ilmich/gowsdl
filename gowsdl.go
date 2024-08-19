@@ -623,9 +623,11 @@ func toGoType(xsdType string, nillable bool) string {
 	// Se il tipo non è trovato, ritorna un tipo pubblico generico Go
 	return "*" + replaceReservedWords(makePublic(t))
 }
-func removePointerFromType(goType string) string {
-	return regexp.MustCompile("^\\s*\\*").ReplaceAllLiteralString(goType, "")
+func removeAllPointersFromType(goType string) string {
+    log.Printf("Removing all pointers from type %s", goType)
+    return regexp.MustCompile("\\s*\\*+").ReplaceAllLiteralString(goType, "")
 }
+
 
 // Given a message, finds its type.
 //
